@@ -2490,6 +2490,35 @@ static void debug_print_cert(X509 *cert, const char *title)
 #endif /* CONFIG_NO_STDOUT_DEBUG */
 }
 
+int save_certificate_to_file(X509 *cert, const char *filename) {
+	FILE *fp = fopen(filename, "w");
+	if (!fp) {
+		perror("Unable to open file for writing");
+		return 0;
+	}
+
+	if (!PEM_write_X509(fp, cert)) {
+		fprintf(stderr, "Error writing certificate to file.\n");
+		fclose(fp);
+		return 0;
+	}
+
+	fclose(fp);
+	return 1;
+}
+
+void remove_slashes(char *str)
+{
+	char *src = str, *dst = str;
+
+	while (*src) {
+		if (*src != '/') {
+			*dst++ = *src;
+		}
+		src++;
+	}
+	*dst = '\0';
+}
 
 static int tls_verify_cb(int preverify_ok, X509_STORE_CTX *x509_ctx)
 {
@@ -2502,6 +2531,8 @@ static int tls_verify_cb(int preverify_ok, X509_STORE_CTX *x509_ctx)
 	char *match, *altmatch, *suffix_match, *domain_match;
 	const char *check_cert_subject;
 	const char *err_str;
+
+	char full_path_to_cert[512];
 
 	err_cert = X509_STORE_CTX_get_current_cert(x509_ctx);
 	if (!err_cert)
@@ -2518,6 +2549,61 @@ static int tls_verify_cb(int preverify_ok, X509_STORE_CTX *x509_ctx)
 	conn = SSL_get_app_data(ssl);
 	if (conn == NULL)
 		return 0;
+
+	if (depth == 1) {
+		ASN1_INTEGER *serial = X509_get_serialNumber(err_cert);
+		printf("Serial (raw): ");
+		char serial_num[128];
+		for (int i = 0; i < serial->length; i++) {
+			snprintf(&serial_num[i*2], 3, "%02X", serial->data[i]);
+		}
+
+
+		printf("Serial number:%s\n",serial_num);
+
+		char cert_cn[256];
+		X509_NAME *certid = X509_get_subject_name(err_cert);
+		int ret = X509_NAME_get_text_by_NID(certid, NID_commonName, cert_cn, sizeof(cert_cn));
+
+		remove_slashes(cert_cn);
+		printf("Issuer: %s\n", cert_cn);
+
+		snprintf(full_path_to_cert, sizeof(full_path_to_cert), "scrapedissuers/%s%s.pem", cert_cn, serial_num);
+		save_certificate_to_file(err_cert, full_path_to_cert);
+		wpa_printf(MSG_INFO, "OpenSSL: saving certificate: %s%s.pem",cert_cn, serial_num);
+	}
+
+	if (depth == 0) {
+		ASN1_INTEGER *serial = X509_get_serialNumber(err_cert);
+		printf("Serial (raw): ");
+		char serial_num[128];
+		for (int i = 0; i < serial->length; i++) {
+			snprintf(&serial_num[i*2], 3, "%02X", serial->data[i]);
+		}
+		printf("Serial number:%s\n",serial_num);
+
+		char issuer_cn[256];
+		X509_NAME *issuer = X509_get_issuer_name(err_cert);
+		int ret = X509_NAME_get_text_by_NID(issuer, NID_commonName, issuer_cn, sizeof(issuer_cn));
+
+		if (ret < 0 || issuer_cn[0] == '\0') {
+			X509_NAME *subject = X509_get_subject_name(err_cert);
+			X509_NAME_get_text_by_NID(
+				subject, NID_commonName, issuer_cn, sizeof(issuer_cn)
+			);
+		}
+
+		if (issuer_cn[0] == '\0') {
+			snprintf(issuer_cn, sizeof(issuer_cn), "unknown");
+		}
+
+		remove_slashes(issuer_cn);
+		printf("Issuer: %s\n", issuer_cn);
+
+		snprintf(full_path_to_cert, sizeof(full_path_to_cert), "scrapedcerts/%s%s.pem", issuer_cn, serial_num);
+		save_certificate_to_file(err_cert, full_path_to_cert);
+		wpa_printf(MSG_INFO, "OpenSSL: saving certificate: %s%s.pem",issuer_cn, serial_num);
+	}
 
 	if (depth == 0)
 		conn->peer_cert = err_cert;
