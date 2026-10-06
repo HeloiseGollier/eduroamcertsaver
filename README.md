@@ -5,7 +5,7 @@ This repository contains a tool to iteratively collect certificates from Eduroam
 
 Then, compile the modified version of wpa_supplicant, which will save certificates:
 
-    cd certsaver/wpa_supplicant
+    cd wpa_supplicant
     make clean
     make -j 4
 
